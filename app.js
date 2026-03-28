@@ -448,11 +448,10 @@ dom.closeBanner.addEventListener('click', () => dom.installBanner.classList.remo
 window.addEventListener('appinstalled', () => dom.installBanner.classList.remove('show'));
 
 // ── Service Worker ─────────────────────────────────────────
+// Remove qualquer service worker registrado anteriormente
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
-    // Quando um novo SW assume o controle, recarrega para pegar o código novo
-    navigator.serviceWorker.addEventListener('controllerchange', () => location.reload());
+  navigator.serviceWorker.getRegistrations().then(regs => {
+    regs.forEach(reg => reg.unregister());
   });
 }
 
