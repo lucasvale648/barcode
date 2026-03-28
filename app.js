@@ -101,6 +101,8 @@ async function openCamera() {
 
 // ── Engine 1: BarcodeDetector (nativo) ────────────────────
 // Suportado: Chrome Android, Chrome Desktop, Safari 17.4+
+// Nota: no Safari iOS detect(videoElement) falha silenciosamente —
+// capturamos um frame para canvas antes de chamar detect().
 async function startBarcodeDetectorLoop() {
   const wanted   = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','qr_code'];
   const supported = await BarcodeDetector.getSupportedFormats().catch(() => wanted);
@@ -108,12 +110,21 @@ async function startBarcodeDetectorLoop() {
 
   state.barcodeDetector = new BarcodeDetector({ formats: formats.length ? formats : ['ean_13','ean_8','code_128'] });
 
+  const ctx = dom.canvas.getContext('2d', { willReadFrequently: true });
+
   const detect = async () => {
     if (!state.scanning) return;
-    try {
-      const codes = await state.barcodeDetector.detect(dom.video);
-      if (codes.length && !state.cooldown) handleBarcode(codes[0].rawValue);
-    } catch (_) {}
+    const w = dom.video.videoWidth;
+    const h = dom.video.videoHeight;
+    if (w && h && dom.video.readyState >= 2) {
+      dom.canvas.width  = w;
+      dom.canvas.height = h;
+      ctx.drawImage(dom.video, 0, 0, w, h);
+      try {
+        const codes = await state.barcodeDetector.detect(dom.canvas);
+        if (codes.length && !state.cooldown) handleBarcode(codes[0].rawValue);
+      } catch (_) {}
+    }
     state.rafId = requestAnimationFrame(detect);
   };
   state.rafId = requestAnimationFrame(detect);
@@ -158,7 +169,15 @@ async function startZxingLoop() {
         const binary   = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
         const result   = reader.decode(binary);
         if (result && !state.cooldown) handleBarcode(result.getText());
-      } catch (_) {}
+      } catch (e) {
+        if (e?.name === 'SecurityError') {
+          // Safari bloqueou getImageData no canvas — interrompe ZXing
+          dom.camStatus.textContent = 'Erro: permissão de câmera insuficiente no Safari.';
+          state.scanning = false;
+          return;
+        }
+        // NotFoundException e outros erros de decode são esperados — ignora
+      }
     }
     state.rafId = requestAnimationFrame(tick);
   };
