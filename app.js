@@ -97,15 +97,20 @@ async function startBarcodeDetectorLoop() {
   const supported = await BarcodeDetector.getSupportedFormats().catch(() => wanted);
   const formats   = wanted.filter(f => supported.includes(f));
 
-  state.barcodeDetector = new BarcodeDetector({ formats: formats.length ? formats : ['ean_13','ean_8','code_128'] });
+  state.barcodeDetector = new BarcodeDetector({ formats: formats.length ? formats : wanted });
+
+  const ctx = dom.canvas.getContext('2d', { willReadFrequently: true });
 
   const detect = async () => {
     if (!state.scanning) return;
-    if (dom.video.readyState >= 2) {
+    const w = dom.video.videoWidth;
+    const h = dom.video.videoHeight;
+    if (w && h) {
+      dom.canvas.width  = w;
+      dom.canvas.height = h;
+      ctx.drawImage(dom.video, 0, 0, w, h);
       try {
-        const bitmap = await createImageBitmap(dom.video);
-        const codes  = await state.barcodeDetector.detect(bitmap);
-        bitmap.close();
+        const codes = await state.barcodeDetector.detect(dom.canvas);
         if (codes.length && !state.cooldown) handleBarcode(codes[0].rawValue);
       } catch (_) {}
     }
