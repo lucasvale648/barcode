@@ -110,18 +110,15 @@ async function startBarcodeDetectorLoop() {
 
   state.barcodeDetector = new BarcodeDetector({ formats: formats.length ? formats : ['ean_13','ean_8','code_128'] });
 
-  const ctx = dom.canvas.getContext('2d', { willReadFrequently: true });
+  dom.camStatus.textContent = 'BarcodeDetector ativo…';
 
   const detect = async () => {
     if (!state.scanning) return;
-    const w = dom.video.videoWidth;
-    const h = dom.video.videoHeight;
-    if (w && h && dom.video.readyState >= 2) {
-      dom.canvas.width  = w;
-      dom.canvas.height = h;
-      ctx.drawImage(dom.video, 0, 0, w, h);
+    if (dom.video.readyState >= 2) {
       try {
-        const codes = await state.barcodeDetector.detect(dom.canvas);
+        const bitmap = await createImageBitmap(dom.video);
+        const codes  = await state.barcodeDetector.detect(bitmap);
+        bitmap.close();
         if (codes.length && !state.cooldown) handleBarcode(codes[0].rawValue);
       } catch (_) {}
     }
@@ -145,9 +142,10 @@ function loadScript(src) {
 
 async function startZxingLoop() {
   if (!window.ZXing) {
-    dom.camStatus.textContent = 'Carregando leitor…';
+    dom.camStatus.textContent = 'Carregando ZXing…';
     await loadScript('https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js');
   }
+  dom.camStatus.textContent = 'ZXing ativo…';
 
   const ctx    = dom.canvas.getContext('2d', { willReadFrequently: true });
   const hints  = new Map([[ZXing.DecodeHintType.TRY_HARDER, true]]);
