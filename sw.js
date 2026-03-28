@@ -1,10 +1,9 @@
-const CACHE_NAME = 'scanner-v1';
+const CACHE_NAME = 'scanner-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/app.css',
   '/app.js',
-  'https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js'
 ];
 
 self.addEventListener('install', e => {
@@ -27,7 +26,7 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
 
   // Requisições de API sempre vão à rede
-  if (url.hostname.includes('openfoodfacts') || url.hostname.includes('openproductsfacts')) {
+  if (url.hostname.includes('openfoodfacts') || url.hostname.includes('openproductsfacts') || url.hostname.includes('cosmos.bluesoft')) {
     e.respondWith(
       fetch(e.request).catch(() =>
         new Response(JSON.stringify({ status: 0, error: 'offline' }), {
