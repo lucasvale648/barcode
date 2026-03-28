@@ -4,6 +4,7 @@ const state = {
   stream: null,
   barcodeDetector: null,
   rafId: null,
+  zxingControls: null,
   lastScanned: '',
   cooldown: false,
   history: JSON.parse(localStorage.getItem('scan_history') || '[]'),
@@ -91,6 +92,37 @@ async function openCamera() {
   }
 }
 
+// ── ZXing (fallback Safari iOS e Firefox) ─────────────────
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src; s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+const ZXING_CDN = 'https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.4/umd/index.min.js';
+
+// Pré-carrega em background para o Safari não esperar ao clicar em escanear
+if (!('BarcodeDetector' in window)) {
+  loadScript(ZXING_CDN).catch(() => {});
+}
+
+async function startZxingLoop() {
+  if (!window.ZXingBrowser) {
+    dom.camStatus.textContent = 'Carregando leitor…';
+    await loadScript(ZXING_CDN);
+  }
+  dom.camStatus.textContent = 'Buscando código de barras…';
+  const reader = new ZXingBrowser.BrowserMultiFormatReader();
+  state.zxingControls = await reader.decodeFromConstraints(
+    { video: { facingMode: { ideal: 'environment' } } },
+    dom.video,
+    (result) => { if (result && !state.cooldown) handleBarcode(result.getText()); }
+  );
+}
+
 // ── BarcodeDetector ────────────────────────────────────────
 async function startBarcodeDetectorLoop() {
   const wanted    = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','qr_code'];
@@ -165,10 +197,15 @@ async function startScanner() {
   showHint('Aponte para o código de barras do produto.');
 
   try {
-    await openCamera();
-    state.scanning = true;
-    dom.camStatus.textContent = 'Buscando código de barras…';
-    await startBarcodeDetectorLoop();
+    if ('BarcodeDetector' in window) {
+      await openCamera();
+      state.scanning = true;
+      dom.camStatus.textContent = 'Buscando código de barras…';
+      await startBarcodeDetectorLoop();
+    } else {
+      state.scanning = true;
+      await startZxingLoop();
+    }
   } catch (err) {
     state.scanning = false;
     const msg = err?.message || '';
@@ -185,6 +222,7 @@ function stopScanner() {
   state.scanning = false;
   state.cooldown = false;
   if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = null; }
+  if (state.zxingControls) { state.zxingControls.stop(); state.zxingControls = null; }
   if (state.stream) { state.stream.getTracks().forEach(t => t.stop()); state.stream = null; }
   dom.video.srcObject   = null;
   state.barcodeDetector = null;
