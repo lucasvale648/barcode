@@ -4,8 +4,6 @@ const state = {
   stream: null,
   barcodeDetector: null,
   rafId: null,
-  zxingReader: null,
-  zxingControls: null,
   lastScanned: '',
   cooldown: false,
   history: JSON.parse(localStorage.getItem('scan_history') || '[]'),
@@ -53,14 +51,8 @@ function showPage(page) {
 dom.navScan.addEventListener('click', () => showPage('scan'));
 dom.navHistory.addEventListener('click', () => showPage('history'));
 
-// ── Câmera: getUserMedia nativo ────────────────────────────
-// Safari exige:
-//   • facingMode via constraints (não deviceId enumerado)
-//   • video.playsinline = true antes do play()
-//   • .play() chamado explicitamente após srcObject
-//   • HTTPS ou localhost em produção
+// ── Câmera ─────────────────────────────────────────────────
 async function openCamera() {
-  // Tenta constraints progressivamente mais simples se o Safari rejeitar
   const attempts = [
     { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
     { video: { facingMode: 'environment' }, audio: false },
@@ -79,7 +71,6 @@ async function openCamera() {
 
   if (!state.stream) throw lastErr || new Error('Câmera não acessível.');
 
-  // Atributos obrigatórios para Safari iOS
   dom.video.srcObject   = state.stream;
   dom.video.playsinline = true;
   dom.video.muted       = true;
@@ -100,18 +91,13 @@ async function openCamera() {
   }
 }
 
-// ── Engine 1: BarcodeDetector (nativo) ────────────────────
-// Suportado: Chrome Android, Chrome Desktop, Safari 17.4+
-// Nota: no Safari iOS detect(videoElement) falha silenciosamente —
-// capturamos um frame para canvas antes de chamar detect().
+// ── BarcodeDetector ────────────────────────────────────────
 async function startBarcodeDetectorLoop() {
-  const wanted   = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','qr_code'];
+  const wanted    = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','qr_code'];
   const supported = await BarcodeDetector.getSupportedFormats().catch(() => wanted);
-  const formats  = wanted.filter(f => supported.includes(f));
+  const formats   = wanted.filter(f => supported.includes(f));
 
   state.barcodeDetector = new BarcodeDetector({ formats: formats.length ? formats : ['ean_13','ean_8','code_128'] });
-
-  dom.camStatus.textContent = 'BarcodeDetector ativo…';
 
   const detect = async () => {
     if (!state.scanning) return;
@@ -126,40 +112,6 @@ async function startBarcodeDetectorLoop() {
     state.rafId = requestAnimationFrame(detect);
   };
   state.rafId = requestAnimationFrame(detect);
-}
-
-// ── Engine 2: @zxing/browser (fallback) ───────────────────
-// Fallback para Safari < 17.4, Firefox, browsers sem BarcodeDetector.
-// @zxing/browser gerencia câmera e detecção diretamente — mais
-// confiável no Safari iOS que a abordagem manual com canvas.
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
-    const s   = document.createElement('script');
-    s.src     = src;
-    s.onload  = resolve;
-    s.onerror = reject;
-    document.head.appendChild(s);
-  });
-}
-
-async function startZxingLoop() {
-  if (!window.ZXingBrowser) {
-    dom.camStatus.textContent = 'Carregando leitor…';
-    await loadScript('https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.4/umd/index.min.js');
-  }
-  dom.camStatus.textContent = 'Buscando código de barras…';
-
-  const reader = new ZXingBrowser.BrowserMultiFormatReader();
-  state.zxingReader = reader;
-
-  state.zxingControls = await reader.decodeFromConstraints(
-    { video: { facingMode: { ideal: 'environment' } } },
-    dom.video,
-    (result, err) => {
-      if (result && !state.cooldown) handleBarcode(result.getText());
-    }
-  );
 }
 
 // ── Handle: código detectado ───────────────────────────────
@@ -181,8 +133,11 @@ function handleBarcode(code) {
 
 // ── Start / Stop ───────────────────────────────────────────
 async function startScanner() {
-  // Normaliza getUserMedia — Safari iOS em alguns contextos nao expoe
-  // navigator.mediaDevices mesmo sendo suportado. Webkit prefix como fallback.
+  if (!('BarcodeDetector' in window)) {
+    showError('Seu Safari não suporta leitura automática.<br>Atualize para iOS 17.4+ ou digite o código manualmente.');
+    return;
+  }
+
   if (!navigator.mediaDevices) navigator.mediaDevices = {};
   if (typeof navigator.mediaDevices.getUserMedia !== 'function') {
     const legacy = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
@@ -191,7 +146,7 @@ async function startScanner() {
         return new Promise(function(res, rej) { legacy.call(navigator, c, res, rej); });
       };
     } else {
-      showError('Câmera não acessível. Verifique se o site está em HTTPS e se a permissão foi concedida nas configurações do Safari.');
+      showError('Câmera não acessível. Verifique as permissões nas configurações do Safari.');
       return;
     }
   }
@@ -202,30 +157,18 @@ async function startScanner() {
   dom.camStatus.textContent    = 'Abrindo câmera…';
   dom.btnStart.style.display   = 'none';
   dom.btnStop.style.display    = '';
-  state.scanning = true;
   showHint('Aponte para o código de barras do produto.');
 
   try {
-    if ('BarcodeDetector' in window) {
-      await openCamera();
-      dom.camStatus.textContent = 'Buscando código de barras…';
-      try {
-        await startBarcodeDetectorLoop();
-      } catch (_) {
-        // BarcodeDetector falhou — fecha câmera e cai no ZXing
-        if (state.stream) { state.stream.getTracks().forEach(t => t.stop()); state.stream = null; }
-        dom.video.srcObject = null;
-        await startZxingLoop();
-      }
-    } else {
-      // @zxing/browser abre câmera internamente
-      await startZxingLoop();
-    }
+    await openCamera();
+    state.scanning = true;
+    dom.camStatus.textContent = 'Buscando código de barras…';
+    await startBarcodeDetectorLoop();
   } catch (err) {
     state.scanning = false;
     const msg = err?.message || '';
     if (/denied|negad|ermission|not allowed/i.test(msg)) {
-      showError('Permissão de câmera negada.<br>No Safari: Ajustes > Safari > Câmera > Permitir.');
+      showError('Permissão de câmera negada.<br>No Safari: Ajustes › Safari › Câmera › Permitir.');
     } else {
       showError('Erro ao abrir câmera: ' + (msg || 'Tente novamente.'));
     }
@@ -237,11 +180,9 @@ function stopScanner() {
   state.scanning = false;
   state.cooldown = false;
   if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = null; }
-  if (state.zxingControls) { state.zxingControls.stop(); state.zxingControls = null; }
   if (state.stream) { state.stream.getTracks().forEach(t => t.stop()); state.stream = null; }
-  dom.video.srcObject    = null;
-  state.barcodeDetector  = null;
-  state.zxingReader      = null;
+  dom.video.srcObject   = null;
+  state.barcodeDetector = null;
   resetCamera();
 }
 
@@ -265,26 +206,54 @@ dom.btnSearch.addEventListener('click', () => {
 dom.manualInput.addEventListener('keydown', e => { if (e.key === 'Enter') dom.btnSearch.click(); });
 
 // ── API ────────────────────────────────────────────────────
-const API_SOURCES = [
-  { name: 'Open Products Facts', url: c => `https://world.openproductsfacts.org/api/v2/product/${c}.json` },
-  { name: 'Open Food Facts',     url: c => `https://world.openfoodfacts.org/api/v2/product/${c}.json` },
-];
+const COSMOS_TOKEN = 'J7v-D-nvXMukVc1ZXlMVRg';
 
 async function fetchProduct(barcode) {
   showLoading(barcode);
-  for (const source of API_SOURCES) {
-    try {
-      const res  = await fetch(source.url(barcode));
-      const data = await res.json();
-      if (data.status === 1 && data.product) {
-        showProduct(data.product, barcode, source.name);
-        saveHistory(barcode, data.product);
-        return;
-      }
-    } catch (_) {
-      if (!navigator.onLine) { showError('Sem conexão com a internet.'); return; }
+  if (!navigator.onLine) { showError('Sem conexão com a internet.'); return; }
+
+  // 1. Cosmos — melhor cobertura de produtos brasileiros
+  try {
+    const res = await fetch(`https://api.cosmos.bluesoft.com.br/gtins/${barcode}.json`, {
+      headers: { 'X-Cosmos-Token': COSMOS_TOKEN },
+    });
+    if (res.ok) {
+      const d = await res.json();
+      const product = {
+        product_name:    d.description || '',
+        brands:          d.brand?.name || '',
+        quantity:        d.quantity || '',
+        categories:      d.category?.description || '',
+        image_front_url: d.thumbnail || '',
+      };
+      showProduct(product, barcode, 'Cosmos');
+      saveHistory(barcode, product);
+      return;
     }
-  }
+  } catch (_) {}
+
+  // 2. Open Products Facts — base aberta de não-alimentos
+  try {
+    const res  = await fetch(`https://world.openproductsfacts.org/api/v2/product/${barcode}.json`);
+    const data = await res.json();
+    if (data.status === 1 && data.product) {
+      showProduct(data.product, barcode, 'Open Products Facts');
+      saveHistory(barcode, data.product);
+      return;
+    }
+  } catch (_) {}
+
+  // 3. Open Food Facts — base aberta de alimentos
+  try {
+    const res  = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json`);
+    const data = await res.json();
+    if (data.status === 1 && data.product) {
+      showProduct(data.product, barcode, 'Open Food Facts');
+      saveHistory(barcode, data.product);
+      return;
+    }
+  } catch (_) {}
+
   showNotFound(barcode);
 }
 
@@ -309,7 +278,6 @@ function showProduct(p, barcode, source) {
   const brand       = p.brands || '';
   const qty         = p.quantity || '';
   const category    = (p.categories || '').split(',')[0].trim();
-  const country     = (p.countries || p.origins || '').split(',')[0].trim();
   const img         = p.image_front_url || p.image_url || '';
   const ingredients = p.ingredients_text || p.ingredients_text_pt || '';
 
@@ -318,7 +286,6 @@ function showProduct(p, barcode, source) {
     qty      && { label: 'Quantidade', value: qty },
     brand    && { label: 'Marca',      value: brand },
     category && { label: 'Categoria',  value: category },
-    country  && { label: 'País',       value: country },
   ].filter(Boolean);
 
   dom.resultWrap.innerHTML = `
@@ -359,7 +326,7 @@ function showNotFound(barcode) {
       <div class="icon">🔍</div>
       <div class="title">Produto não encontrado</div>
       <div class="code">${barcode}</div>
-      <div class="desc">Este código não está nas bases Open Products Facts nem Open Food Facts.</div>
+      <div class="desc">Produto não encontrado nas bases consultadas (Cosmos, Open Products Facts, Open Food Facts).</div>
     </div>`;
 }
 
@@ -385,7 +352,7 @@ function saveHistory(barcode, product) {
 function renderHistory() {
   if (!state.history.length) {
     dom.historyList.innerHTML = '';
-    dom.historyEmpty.style.display   = 'block';
+    dom.historyEmpty.style.display    = 'block';
     dom.btnClearHistory.style.display = 'none';
     return;
   }
