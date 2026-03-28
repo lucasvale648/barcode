@@ -85,14 +85,18 @@ async function openCamera() {
   dom.video.setAttribute('playsinline', '');
   dom.video.setAttribute('muted', '');
 
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Timeout ao abrir câmera.')), 8000);
-    dom.video.onloadedmetadata = () => {
-      clearTimeout(timeout);
-      dom.video.play().then(resolve).catch(reject);
-    };
-    dom.video.onerror = (e) => { clearTimeout(timeout); reject(e); };
-  });
+  if (dom.video.readyState >= 1) {
+    await dom.video.play();
+  } else {
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timeout ao abrir câmera.')), 8000);
+      dom.video.onloadedmetadata = () => {
+        clearTimeout(timeout);
+        dom.video.play().then(resolve).catch(reject);
+      };
+      dom.video.onerror = (e) => { clearTimeout(timeout); reject(e); };
+    });
+  }
 }
 
 // ── Engine 1: BarcodeDetector (nativo) ────────────────────
@@ -209,7 +213,11 @@ async function startScanner() {
     showHint('Aponte para o código de barras do produto.');
 
     if ('BarcodeDetector' in window) {
-      await startBarcodeDetectorLoop();
+      try {
+        await startBarcodeDetectorLoop();
+      } catch (_) {
+        await startZxingLoop();
+      }
     } else {
       await startZxingLoop();
     }
