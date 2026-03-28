@@ -5,6 +5,7 @@ const state = {
   barcodeDetector: null,
   rafId: null,
   zxingReader: null,
+  zxingControls: null,
   lastScanned: '',
   cooldown: false,
   history: JSON.parse(localStorage.getItem('scan_history') || '[]'),
@@ -127,8 +128,10 @@ async function startBarcodeDetectorLoop() {
   state.rafId = requestAnimationFrame(detect);
 }
 
-// ── Engine 2: ZXing via canvas (fallback) ─────────────────
-// Fallback para Safari < 17.4, Firefox, browsers sem BarcodeDetector
+// ── Engine 2: @zxing/browser (fallback) ───────────────────
+// Fallback para Safari < 17.4, Firefox, browsers sem BarcodeDetector.
+// @zxing/browser gerencia câmera e detecção diretamente — mais
+// confiável no Safari iOS que a abordagem manual com canvas.
 function loadScript(src) {
   return new Promise((resolve, reject) => {
     if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
@@ -141,45 +144,22 @@ function loadScript(src) {
 }
 
 async function startZxingLoop() {
-  if (!window.ZXing) {
-    dom.camStatus.textContent = 'Carregando ZXing…';
-    await loadScript('https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js');
+  if (!window.ZXingBrowser) {
+    dom.camStatus.textContent = 'Carregando leitor…';
+    await loadScript('https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.4/umd/index.min.js');
   }
-  dom.camStatus.textContent = 'ZXing ativo…';
+  dom.camStatus.textContent = 'Buscando código de barras…';
 
-  const ctx    = dom.canvas.getContext('2d', { willReadFrequently: true });
-  const hints  = new Map([[ZXing.DecodeHintType.TRY_HARDER, true]]);
-  const reader = new ZXing.MultiFormatReader();
-  reader.setHints(hints);
+  const reader = new ZXingBrowser.BrowserMultiFormatReader();
   state.zxingReader = reader;
 
-  const tick = () => {
-    if (!state.scanning) return;
-    const w = dom.video.videoWidth;
-    const h = dom.video.videoHeight;
-    if (w && h && dom.video.readyState >= 2) {
-      dom.canvas.width  = w;
-      dom.canvas.height = h;
-      ctx.drawImage(dom.video, 0, 0, w, h);
-      try {
-        const imgData  = ctx.getImageData(0, 0, w, h);
-        const lum      = new ZXing.RGBLuminanceSource(imgData.data, w, h);
-        const binary   = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
-        const result   = reader.decode(binary);
-        if (result && !state.cooldown) handleBarcode(result.getText());
-      } catch (e) {
-        if (e?.name === 'SecurityError') {
-          // Safari bloqueou getImageData no canvas — interrompe ZXing
-          dom.camStatus.textContent = 'Erro: permissão de câmera insuficiente no Safari.';
-          state.scanning = false;
-          return;
-        }
-        // NotFoundException e outros erros de decode são esperados — ignora
-      }
+  state.zxingControls = await reader.decodeFromConstraints(
+    { video: { facingMode: { ideal: 'environment' } } },
+    dom.video,
+    (result, err) => {
+      if (result && !state.cooldown) handleBarcode(result.getText());
     }
-    state.rafId = requestAnimationFrame(tick);
-  };
-  state.rafId = requestAnimationFrame(tick);
+  );
 }
 
 // ── Handle: código detectado ───────────────────────────────
@@ -222,23 +202,27 @@ async function startScanner() {
   dom.camStatus.textContent    = 'Abrindo câmera…';
   dom.btnStart.style.display   = 'none';
   dom.btnStop.style.display    = '';
+  state.scanning = true;
+  showHint('Aponte para o código de barras do produto.');
 
   try {
-    await openCamera();
-    state.scanning = true;
-    dom.camStatus.textContent = 'Buscando código de barras…';
-    showHint('Aponte para o código de barras do produto.');
-
     if ('BarcodeDetector' in window) {
+      await openCamera();
+      dom.camStatus.textContent = 'Buscando código de barras…';
       try {
         await startBarcodeDetectorLoop();
       } catch (_) {
+        // BarcodeDetector falhou — fecha câmera e cai no ZXing
+        if (state.stream) { state.stream.getTracks().forEach(t => t.stop()); state.stream = null; }
+        dom.video.srcObject = null;
         await startZxingLoop();
       }
     } else {
+      // @zxing/browser abre câmera internamente
       await startZxingLoop();
     }
   } catch (err) {
+    state.scanning = false;
     const msg = err?.message || '';
     if (/denied|negad|ermission|not allowed/i.test(msg)) {
       showError('Permissão de câmera negada.<br>No Safari: Ajustes > Safari > Câmera > Permitir.');
@@ -253,6 +237,7 @@ function stopScanner() {
   state.scanning = false;
   state.cooldown = false;
   if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = null; }
+  if (state.zxingControls) { state.zxingControls.stop(); state.zxingControls = null; }
   if (state.stream) { state.stream.getTracks().forEach(t => t.stop()); state.stream = null; }
   dom.video.srcObject    = null;
   state.barcodeDetector  = null;
