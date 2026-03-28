@@ -449,7 +449,11 @@ window.addEventListener('appinstalled', () => dom.installBanner.classList.remove
 
 // ── Service Worker ─────────────────────────────────────────
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    // Quando um novo SW assume o controle, recarrega para pegar o código novo
+    navigator.serviceWorker.addEventListener('controllerchange', () => location.reload());
+  });
 }
 
 // ── Init ───────────────────────────────────────────────────
